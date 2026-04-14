@@ -1,0 +1,9 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+  </Configurations>
+  <Project Path="TendedWilds.csproj" Id="a7e3d1f0-5b2c-4a89-9d6e-1f4c8b3a2e07">
+    <Platform Solution="*|x64" Project="x64" />
+  </Project>
+</Solution>
