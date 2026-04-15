@@ -8,7 +8,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System;
 
-[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.0", "SageDragoon")]
+[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.2", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace TendedWilds
