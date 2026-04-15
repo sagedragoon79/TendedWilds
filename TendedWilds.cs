@@ -8,7 +8,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System;
 
-[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.2", "SageDragoon")]
+[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.3", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace TendedWilds
@@ -362,8 +362,21 @@ namespace TendedWilds
             MelonCoroutines.Start(AutoHarvestWatcher());
             MelonCoroutines.Start(WildPlantingPatches.ScoutBlueberryIdentifier());
             MelonCoroutines.Start(ApplyBuildingData());
+            // Save reload safety net: re-run ApplyBuildingData at longer intervals
+            // to handle cases where save deserialization takes longer than our
+            // initial 10s + 10x5s retry window. Idempotent — only processes
+            // forageables with null _buildingData, so already-set ones are skipped.
+            MelonCoroutines.Start(ApplyBuildingDataDelayedPass(30f));
+            MelonCoroutines.Start(ApplyBuildingDataDelayedPass(90f));
             // YearChangeWatcher removed — relocated/planted forageables inherit _buildingData from prefab
             RelocationPatches.PendingRelocations.Clear();
+        }
+
+        private IEnumerator ApplyBuildingDataDelayedPass(float delay)
+        {
+            yield return new WaitForSeconds(delay);
+            MelonLogger.Msg($"ApplyBuildingData: Running safety-net pass after {delay}s delay (catches late-loaded saves).");
+            MelonCoroutines.Start(ApplyBuildingData());
         }
 
         // =====================================================================
