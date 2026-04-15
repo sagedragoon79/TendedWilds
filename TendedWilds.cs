@@ -1488,6 +1488,11 @@ namespace TendedWilds
         // Blueberry BuildingData identifier, discovered at runtime
         private static string blueberryIdentifier = null;
 
+        // Cached reference to the blueberry BuildingData's buildSitePrefab.
+        // Used in ConstructPrefix to verify the incoming construction is
+        // actually our wild plant placement, not some other building being placed.
+        private static GameObject expectedBlueberryBuildSitePrefab = null;
+
         // Prefab cache (discovered at runtime like Forageable Transplantation)
         internal static Dictionary<string, GameObject> foragePrefabs = new Dictionary<string, GameObject>();
 
@@ -1574,6 +1579,7 @@ namespace TendedWilds
             WildPlantSourceShack = null;
             RestoreBlueberryMaterials();
             blueberryIdentifier = null;
+            expectedBlueberryBuildSitePrefab = null;
             foragePrefabs.Clear();
             pendingWildPlants.Clear();
         }
@@ -1972,6 +1978,13 @@ namespace TendedWilds
                 var bbData = GlobalAssets.buildingSetupData.GetBuildingData(blueberryIdentifier);
                 if (bbData != null)
                 {
+                    // Cache the blueberry buildSitePrefab for identity verification in ConstructPrefix.
+                    // This lets us detect whether a Construct call is for our wild planting vs.
+                    // some other building the player started placing afterward.
+                    var bspField = bbData.GetType().GetField("buildSitePrefab", AllInstance);
+                    if (bspField != null)
+                        expectedBlueberryBuildSitePrefab = bspField.GetValue(bbData) as GameObject;
+
                     var matField = bbData.GetType().GetField("buildingMaterials", AllInstance);
                     if (matField != null)
                     {
@@ -2032,6 +2045,22 @@ namespace TendedWilds
         public static void ConstructPrefix(ref ConstructionData constructionData)
         {
             if (!IsWildPlanting) return;
+
+            // Identity check: if this Construct call isn't actually our wild plant
+            // placement, bail out. This handles the case where sticky mode leaves
+            // IsWildPlanting = true but the player exits placement and starts
+            // building something else (e.g., Windmill). Without this guard we'd
+            // hijack the windmill's cost and prefab.
+            if (expectedBlueberryBuildSitePrefab != null
+                && constructionData.buildSitePrefab != expectedBlueberryBuildSitePrefab)
+            {
+                MelonLogger.Msg($"WildPlanting: Construct intercept skipped — buildSitePrefab mismatch " +
+                    $"(got '{(constructionData.buildSitePrefab != null ? constructionData.buildSitePrefab.name : "null")}', " +
+                    $"expected '{expectedBlueberryBuildSitePrefab.name}'). Clearing sticky mode.");
+                IsWildPlanting = false;
+                RestoreBlueberryMaterials();
+                return;
+            }
 
             try
             {
