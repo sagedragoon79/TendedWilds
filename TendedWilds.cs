@@ -8,7 +8,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System;
 
-[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.3", "SageDragoon")]
+[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.4", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace TendedWilds
@@ -386,17 +386,22 @@ namespace TendedWilds
         {
             yield return new WaitForSeconds(5f);
 
+            // Patient retry — up to 30 minutes. Handles slow settlement creation
+            // with map preview mods where the game can sit on the config screen
+            // for 5-10+ minutes before the tech tree is initialized.
+            // Checks every 3 seconds; stops retrying once patched or after 30min.
             int attempts = 0;
-            while (!techTreePatched && attempts < 20)
+            const int maxAttempts = 600;  // 600 × 3s = 30 minutes
+            while (!techTreePatched && attempts < maxAttempts)
             {
                 attempts++;
                 bool shouldRetry = !TryPatchTechTree(attempts);
-                if (shouldRetry)
-                    yield return new WaitForSeconds(3f);
+                if (!shouldRetry) break;
+                yield return new WaitForSeconds(3f);
             }
 
             if (!techTreePatched)
-                MelonLogger.Error("PatchTechTree: Failed to patch Woodlore after all attempts.");
+                MelonLogger.Error("PatchTechTree: Failed to patch Woodlore after 30 minutes of retrying. Consider reporting a bug.");
         }
 
         private bool TryPatchTechTree(int attempt)
@@ -625,9 +630,12 @@ namespace TendedWilds
             object templateBD = null;
             Type buildingDataType = null;
 
-            // Find specifically the Bush_Blueberry_Small template for consistency across passes
+            // Find specifically the Bush_Blueberry_Small template for consistency across passes.
+            // Patient retry — handles slow settlement creation with map preview mods that
+            // can delay scene initialization by 5-10+ minutes. Up to 30 minutes of retrying.
             int attempts = 0;
-            while (attempts < 10)
+            const int maxAttempts = 360;  // 360 × 5s = 30 minutes
+            while (attempts < maxAttempts)
             {
                 attempts++;
                 templateBD = null;
@@ -679,13 +687,16 @@ namespace TendedWilds
 
                 if (templateBD != null) break;
 
-                MelonLogger.Warning($"ApplyBuildingData: No blueberry template found (attempt {attempts}/10), retrying...");
+                // Only log periodic warnings to avoid log spam during long settlement config.
+                // First 3 attempts and every 20th after that.
+                if (attempts <= 3 || attempts % 20 == 0)
+                    MelonLogger.Warning($"ApplyBuildingData: No blueberry template found (attempt {attempts}/{maxAttempts}), retrying...");
                 yield return new WaitForSeconds(5f);
             }
 
             if (templateBD == null)
             {
-                MelonLogger.Error("ApplyBuildingData: No blueberry template found after all attempts.");
+                MelonLogger.Error("ApplyBuildingData: No blueberry template found after 30 minutes of retrying.");
                 yield break;
             }
 
@@ -1639,27 +1650,43 @@ namespace TendedWilds
             // Find blueberry's BuildingData identifier
             var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
 
-            foreach (var obj in Resources.FindObjectsOfTypeAll<GameObject>())
+            // Patient retry for slow settlement creation (map preview mods, big maps).
+            // Checks every 5s for up to 30 minutes.
+            int scoutAttempts = 0;
+            const int maxScoutAttempts = 360;  // 360 × 5s = 30 minutes
+            while (string.IsNullOrEmpty(blueberryIdentifier) && scoutAttempts < maxScoutAttempts)
             {
-                if (!obj.name.ToLower().Contains("blueberry")) continue;
-                var comp = obj.GetComponent("ForageableResource");
-                if (comp == null) continue;
-                var bdField = comp.GetType().GetField("_buildingData", flags);
-                if (bdField == null) continue;
-                var bd = bdField.GetValue(comp);
-                if (bd == null) continue;
-                var idField = bd.GetType().GetField("identifier", flags);
-                if (idField == null) continue;
-                blueberryIdentifier = idField.GetValue(bd) as string;
-                if (!string.IsNullOrEmpty(blueberryIdentifier))
+                scoutAttempts++;
+
+                foreach (var obj in Resources.FindObjectsOfTypeAll<GameObject>())
                 {
-                    MelonLogger.Msg($"WildPlanting: Found blueberry identifier '{blueberryIdentifier}'");
-                    break;
+                    if (!obj.name.ToLower().Contains("blueberry")) continue;
+                    var comp = obj.GetComponent("ForageableResource");
+                    if (comp == null) continue;
+                    var bdField = comp.GetType().GetField("_buildingData", flags);
+                    if (bdField == null) continue;
+                    var bd = bdField.GetValue(comp);
+                    if (bd == null) continue;
+                    var idField = bd.GetType().GetField("identifier", flags);
+                    if (idField == null) continue;
+                    blueberryIdentifier = idField.GetValue(bd) as string;
+                    if (!string.IsNullOrEmpty(blueberryIdentifier))
+                    {
+                        MelonLogger.Msg($"WildPlanting: Found blueberry identifier '{blueberryIdentifier}' on attempt {scoutAttempts}");
+                        break;
+                    }
                 }
+
+                if (!string.IsNullOrEmpty(blueberryIdentifier)) break;
+
+                // Only log periodic warnings to avoid log spam
+                if (scoutAttempts <= 3 || scoutAttempts % 20 == 0)
+                    MelonLogger.Warning($"WildPlanting: blueberry identifier not yet available (attempt {scoutAttempts}/{maxScoutAttempts}), retrying...");
+                yield return new WaitForSeconds(5f);
             }
 
             if (string.IsNullOrEmpty(blueberryIdentifier))
-                MelonLogger.Warning("WildPlanting: Could not find blueberry BuildingData identifier!");
+                MelonLogger.Warning("WildPlanting: Could not find blueberry BuildingData identifier after 30 minutes!");
 
             // Scout forageable prefabs (same as Forageable Transplantation)
             foreach (var obj in Resources.FindObjectsOfTypeAll<GameObject>())
