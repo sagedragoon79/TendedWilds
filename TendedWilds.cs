@@ -8,7 +8,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System;
 
-[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.4", "SageDragoon")]
+[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.5", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace TendedWilds
@@ -627,76 +627,47 @@ namespace TendedWilds
 
             var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
 
+            // Get the Bush_Blueberry_Small BuildingData directly from GlobalAssets.
+            // This is the canonical serialized asset — available regardless of whether
+            // blueberries have spawned on the map yet. Eliminates the need to scan
+            // scene GameObjects and wait for forageables to populate.
+            //
+            // We still retry in case GlobalAssets isn't initialized yet (very early
+            // scene load), but this resolves in 1-2 seconds on normal loads vs 60+s
+            // of scene scanning on slow map configs.
             object templateBD = null;
             Type buildingDataType = null;
 
-            // Find specifically the Bush_Blueberry_Small template for consistency across passes.
-            // Patient retry — handles slow settlement creation with map preview mods that
-            // can delay scene initialization by 5-10+ minutes. Up to 30 minutes of retrying.
             int attempts = 0;
-            const int maxAttempts = 360;  // 360 × 5s = 30 minutes
+            const int maxAttempts = 60;  // 60 × 2s = 2 minutes — plenty for GlobalAssets init
             while (attempts < maxAttempts)
             {
                 attempts++;
-                templateBD = null;
-                buildingDataType = null;
-
-                foreach (var obj in Resources.FindObjectsOfTypeAll<GameObject>())
+                try
                 {
-                    if (!obj.name.ToLower().Contains("blueberry")) continue;
-                    var comp = obj.GetComponent("ForageableResource");
-                    if (comp == null) continue;
-                    var bdField = comp.GetType().GetField("_buildingData", flags);
-                    if (bdField == null) continue;
-                    var bd = bdField.GetValue(comp);
-                    if (bd == null) continue;
-                    // Check identifier to find the canonical Bush_Blueberry_Small
-                    var idField = bd.GetType().GetField("identifier", flags);
-                    string idStr = idField?.GetValue(bd) as string;
-                    if (idStr == "Bush_Blueberry_Small")
+                    var bd = GlobalAssets.buildingSetupData?.GetBuildingData("Bush_Blueberry_Small");
+                    if (bd != null)
                     {
                         templateBD = bd;
                         buildingDataType = bd.GetType();
-                        MelonLogger.Msg($"ApplyBuildingData: Found canonical blueberry template '{idStr}' on '{obj.name}'");
+                        MelonLogger.Msg($"ApplyBuildingData: Loaded 'Bush_Blueberry_Small' from GlobalAssets (attempt {attempts}).");
                         break;
                     }
                 }
-
-                // Fallback: accept any blueberry with non-null BuildingData if canonical not found
-                if (templateBD == null)
+                catch (Exception ex)
                 {
-                    foreach (var obj in Resources.FindObjectsOfTypeAll<GameObject>())
-                    {
-                        if (!obj.name.ToLower().Contains("blueberry")) continue;
-                        var comp = obj.GetComponent("ForageableResource");
-                        if (comp == null) continue;
-                        var bdField = comp.GetType().GetField("_buildingData", flags);
-                        if (bdField == null) continue;
-                        var bd = bdField.GetValue(comp);
-                        if (bd != null)
-                        {
-                            templateBD = bd;
-                            buildingDataType = bd.GetType();
-                            var idField = bd.GetType().GetField("identifier", flags);
-                            string idStr = idField?.GetValue(bd) as string;
-                            MelonLogger.Warning($"ApplyBuildingData: Canonical Bush_Blueberry_Small not found, using fallback '{idStr}' from '{obj.name}'");
-                            break;
-                        }
-                    }
+                    if (attempts <= 3)
+                        MelonLogger.Warning($"ApplyBuildingData: GlobalAssets access error: {ex.Message}");
                 }
 
-                if (templateBD != null) break;
-
-                // Only log periodic warnings to avoid log spam during long settlement config.
-                // First 3 attempts and every 20th after that.
                 if (attempts <= 3 || attempts % 20 == 0)
-                    MelonLogger.Warning($"ApplyBuildingData: No blueberry template found (attempt {attempts}/{maxAttempts}), retrying...");
-                yield return new WaitForSeconds(5f);
+                    MelonLogger.Warning($"ApplyBuildingData: GlobalAssets not ready yet (attempt {attempts}/{maxAttempts}), retrying...");
+                yield return new WaitForSeconds(2f);
             }
 
             if (templateBD == null)
             {
-                MelonLogger.Error("ApplyBuildingData: No blueberry template found after 30 minutes of retrying.");
+                MelonLogger.Error("ApplyBuildingData: Could not load Bush_Blueberry_Small from GlobalAssets after 2 minutes.");
                 yield break;
             }
 
@@ -1647,46 +1618,40 @@ namespace TendedWilds
         {
             yield return new WaitForSeconds(15f);
 
-            // Find blueberry's BuildingData identifier
             var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
 
-            // Patient retry for slow settlement creation (map preview mods, big maps).
-            // Checks every 5s for up to 30 minutes.
+            // Verify Bush_Blueberry_Small exists in GlobalAssets before caching its identifier.
+            // This is fast (GlobalAssets is a static asset store) and doesn't depend on
+            // any blueberries actually being spawned on the map — works even on custom maps
+            // with zero blueberry spawns.
             int scoutAttempts = 0;
-            const int maxScoutAttempts = 360;  // 360 × 5s = 30 minutes
+            const int maxScoutAttempts = 60;  // 60 × 2s = 2 minutes
             while (string.IsNullOrEmpty(blueberryIdentifier) && scoutAttempts < maxScoutAttempts)
             {
                 scoutAttempts++;
-
-                foreach (var obj in Resources.FindObjectsOfTypeAll<GameObject>())
+                try
                 {
-                    if (!obj.name.ToLower().Contains("blueberry")) continue;
-                    var comp = obj.GetComponent("ForageableResource");
-                    if (comp == null) continue;
-                    var bdField = comp.GetType().GetField("_buildingData", flags);
-                    if (bdField == null) continue;
-                    var bd = bdField.GetValue(comp);
-                    if (bd == null) continue;
-                    var idField = bd.GetType().GetField("identifier", flags);
-                    if (idField == null) continue;
-                    blueberryIdentifier = idField.GetValue(bd) as string;
-                    if (!string.IsNullOrEmpty(blueberryIdentifier))
+                    var bd = GlobalAssets.buildingSetupData?.GetBuildingData("Bush_Blueberry_Small");
+                    if (bd != null)
                     {
-                        MelonLogger.Msg($"WildPlanting: Found blueberry identifier '{blueberryIdentifier}' on attempt {scoutAttempts}");
+                        blueberryIdentifier = "Bush_Blueberry_Small";
+                        MelonLogger.Msg($"WildPlanting: Verified blueberry identifier '{blueberryIdentifier}' via GlobalAssets (attempt {scoutAttempts}).");
                         break;
                     }
                 }
+                catch (Exception ex)
+                {
+                    if (scoutAttempts <= 3)
+                        MelonLogger.Warning($"WildPlanting: GlobalAssets access error: {ex.Message}");
+                }
 
-                if (!string.IsNullOrEmpty(blueberryIdentifier)) break;
-
-                // Only log periodic warnings to avoid log spam
                 if (scoutAttempts <= 3 || scoutAttempts % 20 == 0)
-                    MelonLogger.Warning($"WildPlanting: blueberry identifier not yet available (attempt {scoutAttempts}/{maxScoutAttempts}), retrying...");
-                yield return new WaitForSeconds(5f);
+                    MelonLogger.Warning($"WildPlanting: GlobalAssets not ready (attempt {scoutAttempts}/{maxScoutAttempts}), retrying...");
+                yield return new WaitForSeconds(2f);
             }
 
             if (string.IsNullOrEmpty(blueberryIdentifier))
-                MelonLogger.Warning("WildPlanting: Could not find blueberry BuildingData identifier after 30 minutes!");
+                MelonLogger.Warning("WildPlanting: Could not verify blueberry identifier via GlobalAssets after 2 minutes!");
 
             // Scout forageable prefabs (same as Forageable Transplantation)
             foreach (var obj in Resources.FindObjectsOfTypeAll<GameObject>())
