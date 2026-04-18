@@ -50,8 +50,51 @@ namespace TendedWilds
 
         internal const int DEFAULT_PRIORITY = 5;
 
+        // ── Config ────────────────────────────────────────────────────────
+        private static MelonPreferences_Entry<bool> cfgModEnabled;
+        private static MelonPreferences_Entry<bool> cfgRelocationEnabled;
+        internal static MelonPreferences_Entry<bool> cfgRelocateHerbs;
+        internal static MelonPreferences_Entry<bool> cfgRelocateMushrooms;
+        internal static MelonPreferences_Entry<bool> cfgRelocateGreens;
+        internal static MelonPreferences_Entry<bool> cfgRelocateRoots;
+        internal static MelonPreferences_Entry<bool> cfgRelocateNuts;
+        internal static MelonPreferences_Entry<bool> cfgRelocateWillow;
+        internal static MelonPreferences_Entry<bool> cfgRelocateBerries;
+        internal static MelonPreferences_Entry<int>  cfgGoldCostToRelocate;
+
         public override void OnInitializeMelon()
         {
+            var cat = MelonPreferences.CreateCategory("TendedWilds");
+            cfgModEnabled = cat.CreateEntry("ModEnabled", true,
+                display_name: "Mod Enabled",
+                description: "Master switch to enable/disable Tended Wilds. Requires game restart.");
+            cfgRelocationEnabled = cat.CreateEntry("RelocationEnabled", true,
+                display_name: "Relocation Enabled",
+                description: "Enable forageable relocation for all types. Disable if using a separate relocation mod.");
+            cfgRelocateHerbs = cat.CreateEntry("RelocateHerbs", true,
+                display_name: "Relocate Herbs", description: "Allow relocating herb patches.");
+            cfgRelocateMushrooms = cat.CreateEntry("RelocateMushrooms", true,
+                display_name: "Relocate Mushrooms", description: "Allow relocating mushroom clusters.");
+            cfgRelocateGreens = cat.CreateEntry("RelocateGreens", true,
+                display_name: "Relocate Greens", description: "Allow relocating greens patches.");
+            cfgRelocateRoots = cat.CreateEntry("RelocateRoots", true,
+                display_name: "Relocate Roots", description: "Allow relocating root concentrations.");
+            cfgRelocateNuts = cat.CreateEntry("RelocateNuts", true,
+                display_name: "Relocate Nuts", description: "Allow relocating hazelnut bushes.");
+            cfgRelocateWillow = cat.CreateEntry("RelocateWillow", true,
+                display_name: "Relocate Willow", description: "Allow relocating willow bushes.");
+            cfgRelocateBerries = cat.CreateEntry("RelocateBerries", true,
+                display_name: "Relocate Berries", description: "Allow relocating berry bushes (hawthorn, sumac).");
+            cfgGoldCostToRelocate = cat.CreateEntry("GoldCostToRelocate", 0,
+                display_name: "Gold Cost to Relocate",
+                description: "Gold required per relocation (0 = free, just labor).");
+
+            if (!cfgModEnabled.Value)
+            {
+                MelonLogger.Msg("Tended Wilds is DISABLED via config.");
+                return;
+            }
+
             // --- Conflict detection ---
             foreach (var melon in MelonBase.RegisteredMelons)
             {
@@ -271,6 +314,10 @@ namespace TendedWilds
                     }
                 }
 
+                // --- Relocation patches (gated by cfgRelocationEnabled) ---
+                if (cfgRelocationEnabled.Value)
+                {
+
                 // --- Issue 3: Null-safe patch on UIHarvestableResourceWindow.Relocate ---
                 Type uiHarvestWindowType = null;
                 foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
@@ -339,7 +386,13 @@ namespace TendedWilds
                     }
                 }
 
-                MelonLogger.Msg("Tended Wilds v1.0.0: Harmony patches applied.");
+                } // end cfgRelocationEnabled gate
+                else
+                {
+                    MelonLogger.Msg("Relocation patches DISABLED via config.");
+                }
+
+                MelonLogger.Msg("Tended Wilds v1.0.6: Harmony patches applied.");
             }
             catch (Exception ex)
             {
@@ -361,15 +414,13 @@ namespace TendedWilds
             MelonCoroutines.Start(PatchTechTreeDelayed());
             MelonCoroutines.Start(AutoHarvestWatcher());
             MelonCoroutines.Start(WildPlantingPatches.ScoutBlueberryIdentifier());
-            MelonCoroutines.Start(ApplyBuildingData());
-            // Save reload safety net: re-run ApplyBuildingData at longer intervals
-            // to handle cases where save deserialization takes longer than our
-            // initial 10s + 10x5s retry window. Idempotent — only processes
-            // forageables with null _buildingData, so already-set ones are skipped.
-            MelonCoroutines.Start(ApplyBuildingDataDelayedPass(30f));
-            MelonCoroutines.Start(ApplyBuildingDataDelayedPass(90f));
-            // YearChangeWatcher removed — relocated/planted forageables inherit _buildingData from prefab
-            RelocationPatches.PendingRelocations.Clear();
+            if (cfgRelocationEnabled != null && cfgRelocationEnabled.Value)
+            {
+                MelonCoroutines.Start(ApplyBuildingData());
+                MelonCoroutines.Start(ApplyBuildingDataDelayedPass(30f));
+                MelonCoroutines.Start(ApplyBuildingDataDelayedPass(90f));
+                RelocationPatches.PendingRelocations.Clear();
+            }
         }
 
         private IEnumerator ApplyBuildingDataDelayedPass(float delay)
@@ -716,6 +767,8 @@ namespace TendedWilds
             string blueberryIdStr = f_identifier?.GetValue(templateBD) as string;
             MelonLogger.Msg($"ApplyBuildingData: Blueberry identifier='{blueberryIdStr}'");
 
+            int goldCost = cfgGoldCostToRelocate != null ? cfgGoldCostToRelocate.Value : 0;
+
             int count = 0;
             foreach (var obj in Resources.FindObjectsOfTypeAll<GameObject>())
             {
@@ -723,6 +776,17 @@ namespace TendedWilds
                 if (comp == null) continue;
                 if (obj.name.ToLower().Contains("blueberry")) continue;
                 if (obj.name.ToLower().Contains("deco")) continue;
+
+                // Per-type config filter
+                string nameLower = obj.name.ToLower();
+                if (nameLower.Contains("herb") && cfgRelocateHerbs != null && !cfgRelocateHerbs.Value) continue;
+                if (nameLower.Contains("mushroom") && cfgRelocateMushrooms != null && !cfgRelocateMushrooms.Value) continue;
+                if (nameLower.Contains("greens") && cfgRelocateGreens != null && !cfgRelocateGreens.Value) continue;
+                if (nameLower.Contains("roots") && cfgRelocateRoots != null && !cfgRelocateRoots.Value) continue;
+                if (nameLower.Contains("hazelnut") && cfgRelocateNuts != null && !cfgRelocateNuts.Value) continue;
+                if (nameLower.Contains("willow") && cfgRelocateWillow != null && !cfgRelocateWillow.Value) continue;
+                if ((nameLower.Contains("hawthorn") || nameLower.Contains("sumac")) && cfgRelocateBerries != null && !cfgRelocateBerries.Value) continue;
+
                 var bdField = comp.GetType().GetField("_buildingData", flags);
                 if (bdField == null) continue;
                 if (bdField.GetValue(comp) != null) continue;
@@ -766,6 +830,13 @@ namespace TendedWilds
                         var emptyDiagList = (System.Collections.IList)Activator.CreateInstance(listType);
                         f_diagEntries.SetValue(newBD, emptyDiagList);
                     }
+                }
+
+                // Apply gold cost override if configured
+                if (goldCost > 0)
+                {
+                    var f_goldToRelocate = buildingDataType.GetField("goldRequiredToRelocate", flags);
+                    f_goldToRelocate?.SetValue(newBD, goldCost);
                 }
 
                 bdField.SetValue(comp, newBD);
