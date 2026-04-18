@@ -8,7 +8,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System;
 
-[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.5", "SageDragoon")]
+[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.6", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace TendedWilds
@@ -2524,7 +2524,7 @@ namespace TendedWilds
                     {
                         MelonLogger.Msg($"Relocation complete: '{pending.baseName}' (id={kvp.Key}). Spawning.");
                         PendingRelocations.Remove(kvp.Key);
-                        SpawnForageableAtDestination(pending.baseName, pending);
+                        SpawnForageableAtDestination(pending.baseName, pending, builtInstanceOrNull);
                         return;
                     }
                 }
@@ -2533,7 +2533,7 @@ namespace TendedWilds
         }
 
         // --- Spawn the relocated forageable ---
-        public static void SpawnForageableAtDestination(string baseName, PendingRelocation pending)
+        public static void SpawnForageableAtDestination(string baseName, PendingRelocation pending, GameObject blueberryToDestroy = null)
         {
             MelonLogger.Msg($"SpawnForageableAtDestination: '{baseName}' at {pending.destination}");
 
@@ -2604,21 +2604,18 @@ namespace TendedWilds
             spawned.SetActive(true);
             MelonLogger.Msg($"SpawnForageableAtDestination: SUCCESS - '{baseName}' at {pending.destination}");
 
-            MelonCoroutines.Start(CleanupBlueberry(pending.destination, spawned));
-        }
-
-        private static IEnumerator CleanupBlueberry(Vector3 destination, GameObject keepObj)
-        {
-            yield return new WaitForSeconds(0.5f);
-            foreach (var obj in Resources.FindObjectsOfTypeAll<GameObject>())
+            // Directly destroy the blueberry clone that the game built at the
+            // destination. We have a direct reference to it from the
+            // OnBuiltPrefabInstantiated parameter — no fragile proximity search.
+            //
+            // Previously used CleanupBlueberry (0.5s delay + distance search),
+            // which failed when multiple relocations completed simultaneously,
+            // the position drifted due to terrain adjustment, or timing caused
+            // the blueberry to initialize and produce berries before cleanup.
+            if (blueberryToDestroy != null && blueberryToDestroy != spawned)
             {
-                if (obj == keepObj) continue;
-                if (Vector3.Distance(obj.transform.position, destination) < 3f)
-                    if (obj.GetComponent("ForageableResource") != null && obj.name.ToLower().Contains("blueberry"))
-                    {
-                        MelonLogger.Msg($"CleanupBlueberry: Destroying {obj.name}");
-                        GameObject.Destroy(obj);
-                    }
+                MelonLogger.Msg($"Destroying intermediate blueberry: {blueberryToDestroy.name}");
+                GameObject.Destroy(blueberryToDestroy);
             }
         }
     }
