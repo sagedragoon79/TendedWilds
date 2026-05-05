@@ -51,8 +51,8 @@ namespace TendedWilds
         internal const int DEFAULT_PRIORITY = 5;
 
         // ── Config ────────────────────────────────────────────────────────
-        private static MelonPreferences_Entry<bool> cfgModEnabled;
-        private static MelonPreferences_Entry<bool> cfgRelocationEnabled;
+        internal static MelonPreferences_Entry<bool> cfgModEnabled;
+        internal static MelonPreferences_Entry<bool> cfgRelocationEnabled;
         internal static MelonPreferences_Entry<bool> cfgRelocateHerbs;
         internal static MelonPreferences_Entry<bool> cfgRelocateMushrooms;
         internal static MelonPreferences_Entry<bool> cfgRelocateGreens;
@@ -393,6 +393,9 @@ namespace TendedWilds
                 }
 
                 MelonLogger.Msg("Tended Wilds v1.0.6: Harmony patches applied.");
+
+                // Optional: register with Keep Clarity's settings panel if installed.
+                KeepClarityIntegration.TryRegisterAll();
             }
             catch (Exception ex)
             {
@@ -554,24 +557,24 @@ namespace TendedWilds
                 var tm = cachedGameManager.timeManager;
                 if (tm == null) return;
 
-                var dateObj = tm.GetType()
-                    .GetProperty("currentDate", AllInstance)
-                    ?.GetValue(tm);
+                if (pi_TM_currentDate == null)
+                    pi_TM_currentDate = tm.GetType().GetProperty("currentDate", AllInstance);
+                var dateObj = pi_TM_currentDate?.GetValue(tm);
                 if (dateObj == null) return;
 
-                var dateType = dateObj.GetType();
+                if (pi_Date_year == null && ff_Date_year == null)
+                {
+                    var dateType = dateObj.GetType();
+                    pi_Date_year = dateType.GetProperty("year", AllInstance);
+                    if (pi_Date_year == null) ff_Date_year = dateType.GetField("year", AllInstance);
+                    pi_Date_dayOfYear = dateType.GetProperty("dayOfYear", AllInstance);
+                    if (pi_Date_dayOfYear == null) ff_Date_dayOfYear = dateType.GetField("dayOfYear", AllInstance);
+                }
 
-                int currentYear = -1;
-                var yearProp = dateType.GetProperty("year", AllInstance);
-                var yearField = dateType.GetField("year", AllInstance);
-                if (yearProp != null) currentYear = (int)yearProp.GetValue(dateObj);
-                else if (yearField != null) currentYear = (int)yearField.GetValue(dateObj);
-
-                int currentDayOfYear = -1;
-                var dayProp = dateType.GetProperty("dayOfYear", AllInstance);
-                var dayField = dateType.GetField("dayOfYear", AllInstance);
-                if (dayProp != null) currentDayOfYear = (int)dayProp.GetValue(dateObj);
-                else if (dayField != null) currentDayOfYear = (int)dayField.GetValue(dateObj);
+                int currentYear = pi_Date_year != null ? (int)pi_Date_year.GetValue(dateObj)
+                                : ff_Date_year != null ? (int)ff_Date_year.GetValue(dateObj) : -1;
+                int currentDayOfYear = pi_Date_dayOfYear != null ? (int)pi_Date_dayOfYear.GetValue(dateObj)
+                                     : ff_Date_dayOfYear != null ? (int)ff_Date_dayOfYear.GetValue(dateObj) : -1;
 
                 if (currentYear == -1 || currentDayOfYear == -1) return;
 
@@ -604,11 +607,8 @@ namespace TendedWilds
                 var shacksRO = rm.foragerShacksRO;
                 if (shacksRO == null || shacksRO.Count == 0) return;
 
-                var cultivatedItemsField = typeof(ForagerShack).GetField("cultivatedItems", AllInstance);
-                var itemStorageField = typeof(ReservableItemStorage).GetField("itemStorage", AllInstance);
-                var getCopyMethod = typeof(ItemStorage).GetMethod("GetCopyOfAllItems", AllInstance);
-
-                if (cultivatedItemsField == null || itemStorageField == null || getCopyMethod == null)
+                EnsureForagerShackFieldCache();
+                if (fi_FS_cultivatedItems == null || fi_RIS_itemStorage == null || mi_IS_GetCopyOfAllItems == null)
                 {
                     MelonLogger.Warning("AutoHarvest: Could not resolve reflection targets.");
                     return;
@@ -623,26 +623,26 @@ namespace TendedWilds
                     ReservableItemStorage shackStorage = shack.storage;
                     if (shackStorage == null) continue;
 
-                    var cultivatedList = cultivatedItemsField.GetValue(shack) as System.Collections.IList;
+                    var cultivatedList = fi_FS_cultivatedItems.GetValue(shack) as System.Collections.IList;
                     if (cultivatedList == null || cultivatedList.Count == 0) continue;
 
                     foreach (var cultivatedObj in cultivatedList)
                     {
                         if (cultivatedObj == null) continue;
 
-                        var resourceField = cultivatedObj.GetType().GetField("resource", AllInstance);
-                        if (resourceField == null) continue;
+                        EnsureCultivatedItemFieldCache(cultivatedObj);
+                        if (fi_CFI_resource == null) continue;
 
-                        var resource = resourceField.GetValue(cultivatedObj) as ForageableResource;
+                        var resource = fi_CFI_resource.GetValue(cultivatedObj) as ForageableResource;
                         if (resource == null) continue;
 
                         ReservableItemStorage resourceStorage = resource.storage;
                         if (resourceStorage == null) continue;
 
-                        var innerStorage = itemStorageField.GetValue(resourceStorage) as ItemStorage;
+                        var innerStorage = fi_RIS_itemStorage.GetValue(resourceStorage) as ItemStorage;
                         if (innerStorage == null) continue;
 
-                        var bundles = getCopyMethod.Invoke(innerStorage, null) as List<ItemBundle>;
+                        var bundles = mi_IS_GetCopyOfAllItems.Invoke(innerStorage, null) as List<ItemBundle>;
                         if (bundles == null || bundles.Count == 0) continue;
 
                         foreach (var bundle in bundles)
@@ -774,11 +774,12 @@ namespace TendedWilds
             {
                 var comp = obj.GetComponent("ForageableResource");
                 if (comp == null) continue;
-                if (obj.name.ToLower().Contains("blueberry")) continue;
-                if (obj.name.ToLower().Contains("deco")) continue;
+
+                string nameLower = obj.name.ToLower();
+                if (nameLower.Contains("blueberry")) continue;
+                if (nameLower.Contains("deco")) continue;
 
                 // Per-type config filter
-                string nameLower = obj.name.ToLower();
                 if (nameLower.Contains("herb") && cfgRelocateHerbs != null && !cfgRelocateHerbs.Value) continue;
                 if (nameLower.Contains("mushroom") && cfgRelocateMushrooms != null && !cfgRelocateMushrooms.Value) continue;
                 if (nameLower.Contains("greens") && cfgRelocateGreens != null && !cfgRelocateGreens.Value) continue;
@@ -905,10 +906,10 @@ namespace TendedWilds
         {
             try
             {
-                var scoreField = typeof(ForagerShack).GetField("_scoreByForagingBucket", AllInstance);
-                if (scoreField == null) return;
+                EnsureForagerShackFieldCache();
+                if (fi_FS_scoreByForagingBucket == null) return;
 
-                var dict = scoreField.GetValue(shack) as System.Collections.IDictionary;
+                var dict = fi_FS_scoreByForagingBucket.GetValue(shack) as System.Collections.IDictionary;
                 if (dict == null) return;
 
                 // Map ItemID to both normal and cultivated WorkBucketIdentifiers
@@ -960,6 +961,56 @@ namespace TendedWilds
                 dict[bucket] = score;
         }
 
+        // ── Reflection cache (perf) ───────────────────────────────────────
+        // Resolved lazily on first use; types are stable so this is safe.
+        // CultivatedForagedItem is a private nested type, so we resolve from a live entry.
+        internal static FieldInfo fi_FS_cultivatedItems;
+        internal static FieldInfo fi_FS_canCultivatedThisYear;
+        internal static FieldInfo fi_FS_scoreByForagingBucket;
+        internal static MethodInfo mi_FS_GrowCultivatedItem;
+        internal static FieldInfo fi_RIS_itemStorage;
+        internal static MethodInfo mi_IS_GetCopyOfAllItems;
+        internal static FieldInfo fi_CFI_resource;
+        internal static FieldInfo fi_CFI_item;
+        internal static FieldInfo fi_CFI_renderers;
+        internal static FieldInfo fi_CFI_startScales;
+        internal static FieldInfo fi_CFI_endScales;
+        internal static PropertyInfo pi_TM_currentDate;
+        internal static PropertyInfo pi_Date_year;
+        internal static FieldInfo    ff_Date_year;
+        internal static PropertyInfo pi_Date_dayOfYear;
+        internal static FieldInfo    ff_Date_dayOfYear;
+        private static bool cfiCacheInitialized = false;
+
+        internal static void EnsureCultivatedItemFieldCache(object entry)
+        {
+            if (cfiCacheInitialized || entry == null) return;
+            var t = entry.GetType();
+            fi_CFI_resource    = t.GetField("resource", AllInstance);
+            fi_CFI_item        = t.GetField("item", AllInstance);
+            fi_CFI_renderers   = t.GetField("renderers", AllInstance);
+            fi_CFI_startScales = t.GetField("startScales", AllInstance);
+            fi_CFI_endScales   = t.GetField("endScales", AllInstance);
+            cfiCacheInitialized = true;
+        }
+
+        internal static void EnsureForagerShackFieldCache()
+        {
+            if (fi_FS_cultivatedItems == null)
+                fi_FS_cultivatedItems = typeof(ForagerShack).GetField("cultivatedItems", AllInstance);
+            if (fi_FS_canCultivatedThisYear == null)
+                fi_FS_canCultivatedThisYear = typeof(ForagerShack).GetField("canCultivatedThisYear", AllInstance);
+            if (fi_FS_scoreByForagingBucket == null)
+                fi_FS_scoreByForagingBucket = typeof(ForagerShack).GetField("_scoreByForagingBucket", AllInstance);
+            if (mi_FS_GrowCultivatedItem == null)
+                mi_FS_GrowCultivatedItem = typeof(ForagerShack).GetMethod("GrowCultivatedItem",
+                    AllInstance | BindingFlags.DeclaredOnly, null, Type.EmptyTypes, null);
+            if (fi_RIS_itemStorage == null)
+                fi_RIS_itemStorage = typeof(ReservableItemStorage).GetField("itemStorage", AllInstance);
+            if (mi_IS_GetCopyOfAllItems == null)
+                mi_IS_GetCopyOfAllItems = typeof(ItemStorage).GetMethod("GetCopyOfAllItems", AllInstance);
+        }
+
         // Initialize default priorities for a shack (all items at 5)
         internal static void InitializeShackDefaults(ForagerShack shack)
         {
@@ -990,16 +1041,12 @@ namespace TendedWilds
     // =========================================================================
     public static class ForagerShackPatches
     {
-        private static readonly BindingFlags AllInstance =
-            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
-
         public static void GrowCultivatedItemPrefix(object __instance)
         {
             try
             {
-                var field = __instance.GetType().GetField("canCultivatedThisYear", AllInstance);
-                if (field != null)
-                    field.SetValue(__instance, true);
+                TendedWildsMod.EnsureForagerShackFieldCache();
+                TendedWildsMod.fi_FS_canCultivatedThisYear?.SetValue(__instance, true);
             }
             catch (Exception ex)
             {
@@ -1018,7 +1065,10 @@ namespace TendedWilds
                 int priority = TendedWildsMod.GetPriority(shack, itemID);
                 __result = priority > 1;
             }
-            catch { }
+            catch (Exception ex)
+            {
+                MelonLogger.Error($"IsPrioritizedPostfix error: {ex.Message}");
+            }
         }
 
         // Postfix on SetPrioritized: apply our 1-9 score when toggle ON,
@@ -1045,7 +1095,10 @@ namespace TendedWilds
                 }
                 // Toggle OFF — vanilla already set score to 0, leave it
             }
-            catch { }
+            catch (Exception ex)
+            {
+                MelonLogger.Error($"SetPrioritizedPostfix error: {ex.Message}");
+            }
         }
 
         public static bool DestroyCultivatedItemsPrefix()
@@ -1063,23 +1116,22 @@ namespace TendedWilds
                 if (shack == null) return;
 
                 // Check if there are cultivated items that still need growth (resource == null)
-                var cultivatedItemsField = typeof(ForagerShack).GetField("cultivatedItems", AllInstance);
-                if (cultivatedItemsField == null) return;
-                var list = cultivatedItemsField.GetValue(shack) as System.Collections.IList;
+                TendedWildsMod.EnsureForagerShackFieldCache();
+                if (TendedWildsMod.fi_FS_cultivatedItems == null) return;
+                var list = TendedWildsMod.fi_FS_cultivatedItems.GetValue(shack) as System.Collections.IList;
                 if (list == null || list.Count == 0) return;
 
                 bool needsGrowth = false;
                 foreach (var entry in list)
                 {
                     if (entry == null) continue;
-                    var resourceField = entry.GetType().GetField("resource", AllInstance);
-                    if (resourceField == null) continue;
-                    var resource = resourceField.GetValue(entry);
+                    TendedWildsMod.EnsureCultivatedItemFieldCache(entry);
+                    if (TendedWildsMod.fi_CFI_resource == null) continue;
+                    var resource = TendedWildsMod.fi_CFI_resource.GetValue(entry);
                     if (resource == null || resource.Equals(null))
                     {
                         // This entry has no resource yet — it needs UpdateScales to keep running
-                        var itemField = entry.GetType().GetField("item", AllInstance);
-                        if (itemField != null && itemField.GetValue(entry) != null)
+                        if (TendedWildsMod.fi_CFI_item != null && TendedWildsMod.fi_CFI_item.GetValue(entry) != null)
                         {
                             needsGrowth = true;
                             break;
@@ -1092,7 +1144,10 @@ namespace TendedWilds
                     shack.InvokeRepeating("UpdateScales", 0.5f, UnityEngine.Random.Range(5f, 9.99f));
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                MelonLogger.Error($"UpdateScalesPostfix error: {ex.Message}");
+            }
         }
 
         // OnSeasonChanged calls CancelInvoke("UpdateScales") in winter before DestroyCultivatedItems.
@@ -1107,16 +1162,19 @@ namespace TendedWilds
                 // Re-invoke UpdateScales if there are items needing growth
                 if (!shack.IsInvoking("UpdateScales"))
                 {
-                    var cultivatedItemsField = typeof(ForagerShack).GetField("cultivatedItems", AllInstance);
-                    if (cultivatedItemsField == null) return;
-                    var list = cultivatedItemsField.GetValue(shack) as System.Collections.IList;
+                    TendedWildsMod.EnsureForagerShackFieldCache();
+                    if (TendedWildsMod.fi_FS_cultivatedItems == null) return;
+                    var list = TendedWildsMod.fi_FS_cultivatedItems.GetValue(shack) as System.Collections.IList;
                     if (list != null && list.Count > 0)
                     {
                         shack.InvokeRepeating("UpdateScales", 1f, UnityEngine.Random.Range(5f, 9.99f));
                     }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                MelonLogger.Error($"OnSeasonChangedPostfix error: {ex.Message}");
+            }
         }
 
         // Issue 2: After workers empty a cultivated forageable, reset growth state to allow regrowth
@@ -1131,29 +1189,28 @@ namespace TendedWilds
                 var shack = __instance as ForagerShack;
                 if (shack == null) return;
 
-                var cultivatedItemsField = typeof(ForagerShack).GetField("cultivatedItems", AllInstance);
-                if (cultivatedItemsField == null) return;
+                TendedWildsMod.EnsureForagerShackFieldCache();
+                if (TendedWildsMod.fi_FS_cultivatedItems == null) return;
 
-                var cultivatedList = cultivatedItemsField.GetValue(shack) as System.Collections.IList;
+                var cultivatedList = TendedWildsMod.fi_FS_cultivatedItems.GetValue(shack) as System.Collections.IList;
                 if (cultivatedList == null) return;
 
                 bool resetAny = false;
                 foreach (var entry in cultivatedList)
                 {
                     if (entry == null) continue;
-                    var resourceField = entry.GetType().GetField("resource", AllInstance);
-                    if (resourceField == null) continue;
+                    TendedWildsMod.EnsureCultivatedItemFieldCache(entry);
+                    if (TendedWildsMod.fi_CFI_resource == null) continue;
 
-                    var resource = resourceField.GetValue(entry) as ForageableResource;
+                    var resource = TendedWildsMod.fi_CFI_resource.GetValue(entry) as ForageableResource;
                     // Match: the resource whose storage was just emptied
                     // We check if the resource's storage is empty or the resource matches the instigator context
                     if (resource != null)
                     {
                         // Check if this resource's storage is empty (it should be since OnCultivatedItemEmpty fired)
-                        var itemStorageField = typeof(ReservableItemStorage).GetField("itemStorage", AllInstance);
-                        if (itemStorageField != null)
+                        if (TendedWildsMod.fi_RIS_itemStorage != null)
                         {
-                            var innerStorage = itemStorageField.GetValue(resource.storage) as ItemStorage;
+                            var innerStorage = TendedWildsMod.fi_RIS_itemStorage.GetValue(resource.storage) as ItemStorage;
                             if (innerStorage != null)
                             {
                                 uint remaining = innerStorage.GetItemCountOfAllUnneededItems();
@@ -1162,53 +1219,48 @@ namespace TendedWilds
                         }
 
                         // Null out the item field to signal "needs regrowth"
-                        var itemField = entry.GetType().GetField("item", AllInstance);
-                        if (itemField != null)
+                        if (TendedWildsMod.fi_CFI_item != null)
                         {
-                            itemField.SetValue(entry, null);
+                            TendedWildsMod.fi_CFI_item.SetValue(entry, null);
                             resetAny = true;
                         }
 
                         // Destroy the emptied ForageableResource object (mimics what vanilla destroy does per-entry)
-                        try { UnityEngine.Object.Destroy(resource.gameObject); } catch { }
-                        resourceField.SetValue(entry, null);
+                        try { UnityEngine.Object.Destroy(resource.gameObject); }
+                        catch (Exception ex) { MelonLogger.Warning($"OnCultivatedItemEmpty: Destroy(resource) failed: {ex.Message}"); }
+                        TendedWildsMod.fi_CFI_resource.SetValue(entry, null);
 
                         // Clear renderers list so GrowCultivatedItem can repopulate
-                        var renderersField = entry.GetType().GetField("renderers", AllInstance);
-                        if (renderersField != null)
+                        if (TendedWildsMod.fi_CFI_renderers != null)
                         {
-                            var renderers = renderersField.GetValue(entry) as System.Collections.IList;
+                            var renderers = TendedWildsMod.fi_CFI_renderers.GetValue(entry) as System.Collections.IList;
                             if (renderers != null)
                             {
                                 foreach (var r in renderers)
                                 {
                                     var renderer = r as Renderer;
                                     if (renderer != null && renderer.gameObject != null)
-                                        try { UnityEngine.Object.Destroy(renderer.gameObject); } catch { }
+                                        try { UnityEngine.Object.Destroy(renderer.gameObject); }
+                                        catch (Exception ex) { MelonLogger.Warning($"OnCultivatedItemEmpty: Destroy(renderer) failed: {ex.Message}"); }
                                 }
                                 renderers.Clear();
                             }
                         }
 
                         // Clear scale lists
-                        var startScalesField = entry.GetType().GetField("startScales", AllInstance);
-                        var endScalesField = entry.GetType().GetField("endScales", AllInstance);
-                        (startScalesField?.GetValue(entry) as System.Collections.IList)?.Clear();
-                        (endScalesField?.GetValue(entry) as System.Collections.IList)?.Clear();
+                        (TendedWildsMod.fi_CFI_startScales?.GetValue(entry) as System.Collections.IList)?.Clear();
+                        (TendedWildsMod.fi_CFI_endScales?.GetValue(entry) as System.Collections.IList)?.Clear();
                     }
                 }
 
                 if (resetAny)
                 {
                     // Set canCultivatedThisYear = true and call GrowCultivatedItem to restart the cycle
-                    var canField = typeof(ForagerShack).GetField("canCultivatedThisYear", AllInstance);
-                    if (canField != null) canField.SetValue(shack, true);
+                    TendedWildsMod.fi_FS_canCultivatedThisYear?.SetValue(shack, true);
 
-                    var growMethod = typeof(ForagerShack).GetMethod("GrowCultivatedItem",
-                        AllInstance | BindingFlags.DeclaredOnly, null, Type.EmptyTypes, null);
-                    if (growMethod != null)
+                    if (TendedWildsMod.mi_FS_GrowCultivatedItem != null)
                     {
-                        growMethod.Invoke(shack, null);
+                        TendedWildsMod.mi_FS_GrowCultivatedItem.Invoke(shack, null);
                         MelonLogger.Msg("Greenhouse: Triggered regrowth after harvest.");
                     }
                 }
@@ -1724,33 +1776,11 @@ namespace TendedWilds
             if (string.IsNullOrEmpty(blueberryIdentifier))
                 MelonLogger.Warning("WildPlanting: Could not verify blueberry identifier via GlobalAssets after 2 minutes!");
 
-            // Scout forageable prefabs (same as Forageable Transplantation)
-            foreach (var obj in Resources.FindObjectsOfTypeAll<GameObject>())
-            {
-                if (obj.scene.IsValid()) continue;
-                var forageComp = obj.GetComponent("ForageableResource");
-                if (forageComp == null) continue;
-                string baseName = obj.name.Replace("(Clone)", "").Trim().ToLower();
-                if (baseName.Contains("deco")) continue;
-                if (!foragePrefabs.ContainsKey(baseName))
-                    foragePrefabs[baseName] = obj;
-            }
-
-            // Scene fallback
-            foreach (var obj in Resources.FindObjectsOfTypeAll<GameObject>())
-            {
-                if (!obj.scene.IsValid()) continue;
-                var forageComp = obj.GetComponent("ForageableResource");
-                if (forageComp == null) continue;
-                string baseName = obj.name.Replace("(Clone)", "").Trim().ToLower();
-                if (baseName.Contains("deco")) continue;
-                if (!foragePrefabs.ContainsKey(baseName))
-                    foragePrefabs[baseName] = obj;
-            }
-
-            // Third source: read prefab fields from ForagerShack instances
-            // These are serialized asset references that exist regardless of map content
-            // Fixes maps that don't have certain forageable types spawned naturally
+            // Scout forageable prefabs from ForagerShack's serialized prefab fields.
+            // These are asset references baked into the game files — available
+            // regardless of map content or whether forageables have spawned.
+            // Replaces the prior pair of Resources.FindObjectsOfTypeAll<GameObject>()
+            // scene scans, which were Forageable Transplantation-era leftovers.
             try
             {
                 string[] prefabFieldNames = new string[]
