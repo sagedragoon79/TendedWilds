@@ -114,6 +114,7 @@
   <ItemGroup>
     <Compile Include="TendedWilds.cs" />
     <Compile Include="PlantIconData.cs" />
+    <Compile Include="KeepClarityIntegration.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
