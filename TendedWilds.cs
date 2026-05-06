@@ -8,7 +8,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System;
 
-[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.6", "SageDragoon")]
+[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.7", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace TendedWilds
@@ -392,7 +392,7 @@ namespace TendedWilds
                     MelonLogger.Msg("Relocation patches DISABLED via config.");
                 }
 
-                MelonLogger.Msg("Tended Wilds v1.0.6: Harmony patches applied.");
+                MelonLogger.Msg("Tended Wilds v1.0.7: Harmony patches applied.");
 
                 // Optional: register with Keep Clarity's settings panel if installed.
                 KeepClarityIntegration.TryRegisterAll();
@@ -419,18 +419,42 @@ namespace TendedWilds
             MelonCoroutines.Start(WildPlantingPatches.ScoutBlueberryIdentifier());
             if (cfgRelocationEnabled != null && cfgRelocationEnabled.Value)
             {
-                MelonCoroutines.Start(ApplyBuildingData());
-                MelonCoroutines.Start(ApplyBuildingDataDelayedPass(30f));
-                MelonCoroutines.Start(ApplyBuildingDataDelayedPass(90f));
+                MelonCoroutines.Start(ApplyBuildingDataChain());
                 RelocationPatches.PendingRelocations.Clear();
             }
         }
 
-        private IEnumerator ApplyBuildingDataDelayedPass(float delay)
+        // Tracks the result of the most recent ApplyBuildingData run so the
+        // chain coroutine can decide whether to escalate to a safety-net pass.
+        // > 0 means the pass enabled at least one forageable (save was loaded
+        // in time) and no further passes are needed.
+        private static int _lastApplyCount = -1;
+
+        // Chain-on-failure: only escalates to a safety-net pass if the prior
+        // pass found zero forageables. On a normal load, pass 1 succeeds and
+        // the coroutine exits — no idle sleeps or wasted scans. Replaces the
+        // earlier "schedule three passes unconditionally" approach which
+        // caused two visible game freezes per load on populated maps.
+        private IEnumerator ApplyBuildingDataChain()
         {
-            yield return new WaitForSeconds(delay);
-            MelonLogger.Msg($"ApplyBuildingData: Running safety-net pass after {delay}s delay (catches late-loaded saves).");
-            MelonCoroutines.Start(ApplyBuildingData());
+            // Pass 1 — initial scan after GlobalAssets is ready (10s wait
+            // lives inside ApplyBuildingData itself).
+            _lastApplyCount = -1;
+            yield return ApplyBuildingData();
+            if (_lastApplyCount > 0) yield break;
+
+            // Pass 2 — safety net for slow saves that hadn't spawned all
+            // forageables when pass 1 ran.
+            yield return new WaitForSeconds(30f);
+            MelonLogger.Msg("ApplyBuildingData: Pass 1 found 0 forageables — running safety-net pass after +30s.");
+            _lastApplyCount = -1;
+            yield return ApplyBuildingData();
+            if (_lastApplyCount > 0) yield break;
+
+            // Pass 3 — last resort for very slow loads.
+            yield return new WaitForSeconds(60f);
+            MelonLogger.Msg("ApplyBuildingData: Pass 2 still found 0 — running last-resort pass.");
+            yield return ApplyBuildingData();
         }
 
         // =====================================================================
@@ -770,10 +794,15 @@ namespace TendedWilds
             int goldCost = cfgGoldCostToRelocate != null ? cfgGoldCostToRelocate.Value : 0;
 
             int count = 0;
-            foreach (var obj in Resources.FindObjectsOfTypeAll<GameObject>())
+            // Iterate ForageableResource components directly. This skips the
+            // ~30k-object scene-wide GameObject scan (the dominant cost in
+            // this method) and the per-object string-based GetComponent —
+            // returns only the ~100-500 ForageableResource components, an
+            // O(60-300×) speedup that turns a 1-second freeze into a few ms.
+            foreach (var comp in Resources.FindObjectsOfTypeAll<ForageableResource>())
             {
-                var comp = obj.GetComponent("ForageableResource");
                 if (comp == null) continue;
+                var obj = comp.gameObject;
 
                 string nameLower = obj.name.ToLower();
                 if (nameLower.Contains("blueberry")) continue;
@@ -852,6 +881,7 @@ namespace TendedWilds
                     MelonLogger.Msg($"ApplyBuildingData: Enabled transplantation for '{obj.name}' (bdId='{blueberryIdStr}')");
             }
 
+            _lastApplyCount = count;
             MelonLogger.Msg($"ApplyBuildingData: Done. Enabled {count} new forageables for transplantation.");
         }
 
