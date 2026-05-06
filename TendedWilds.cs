@@ -1806,42 +1806,46 @@ namespace TendedWilds
             if (string.IsNullOrEmpty(blueberryIdentifier))
                 MelonLogger.Warning("WildPlanting: Could not verify blueberry identifier via GlobalAssets after 2 minutes!");
 
-            // Scout forageable prefabs from ForagerShack's serialized prefab fields.
-            // These are asset references baked into the game files — available
-            // regardless of map content or whether forageables have spawned.
-            // Replaces the prior pair of Resources.FindObjectsOfTypeAll<GameObject>()
-            // scene scans, which were Forageable Transplantation-era leftovers.
+            // Scout forageable prefabs by enumerating every loaded
+            // ForageableResource component (assets + scene instances).
+            //
+            // Prior versions read the prefab fields off
+            // Resources.FindObjectsOfTypeAll<ForagerShack>(), which returns
+            // nothing on maps where the player hasn't built (or opened the
+            // build menu for) a Forager Shack — the shack prefab isn't in
+            // memory until something references it. The cache stayed empty
+            // and every relocation failed with "No prefab found".
+            //
+            // ForageableResource is the component the relocation path itself
+            // checks (`obj.GetComponent("ForageableResource")`), so any
+            // GameObject we cache here is by definition a valid relocation
+            // target. FindObjectsOfTypeAll<T> includes both prefab assets and
+            // scene instances, so we get the asset prefabs FF loaded with the
+            // map even when nothing's been built yet.
+            //
+            // We dedupe by lowercased gameObject name (stripping "(Clone)") so
+            // 200 herbs_patch_small_01 instances on the map collapse to one
+            // cache entry, keyed to match the lookup format in
+            // SpawnForageableAtDestination.
             try
             {
-                string[] prefabFieldNames = new string[]
+                int loaded = 0;
+                foreach (var fr in Resources.FindObjectsOfTypeAll<ForageableResource>())
                 {
-                    "herbsPrefab", "nutsPrefab", "greensPrefab",
-                    "medicinalRootsPrefab", "mushroomsPrefab",
-                    "willowPrefab", "berriesPrefab"
-                };
-
-                foreach (var shack in Resources.FindObjectsOfTypeAll<ForagerShack>())
-                {
-                    if (shack == null) continue;
-                    foreach (var fieldName in prefabFieldNames)
-                    {
-                        var field = typeof(ForagerShack).GetField(fieldName, flags);
-                        if (field == null) continue;
-                        var prefabObj = field.GetValue(shack) as ForageableResource;
-                        if (prefabObj == null) continue;
-                        string baseName = prefabObj.gameObject.name.Replace("(Clone)", "").Trim().ToLower();
-                        if (!string.IsNullOrEmpty(baseName) && !baseName.Contains("deco") && !foragePrefabs.ContainsKey(baseName))
-                        {
-                            foragePrefabs[baseName] = prefabObj.gameObject;
-                            MelonLogger.Msg($"WildPlanting: Found prefab '{baseName}' from ForagerShack.{fieldName}");
-                        }
-                    }
-                    break; // Only need one shack — all have the same prefab references
+                    if (fr == null) continue;
+                    var go = fr.gameObject;
+                    if (go == null) continue;
+                    string baseName = go.name.Replace("(Clone)", "").Trim().ToLower();
+                    if (string.IsNullOrEmpty(baseName) || baseName.Contains("deco")) continue;
+                    if (foragePrefabs.ContainsKey(baseName)) continue;
+                    foragePrefabs[baseName] = go;
+                    loaded++;
                 }
+                MelonLogger.Msg($"WildPlanting: Loaded {loaded} forageable prefab(s) from ForageableResource scan.");
             }
             catch (Exception ex)
             {
-                MelonLogger.Warning($"WildPlanting: ForagerShack prefab scan failed: {ex.Message}");
+                MelonLogger.Warning($"WildPlanting: ForageableResource scout failed: {ex.Message}");
             }
 
             MelonLogger.Msg($"WildPlanting: Scouted {foragePrefabs.Count} forageable prefabs.");
