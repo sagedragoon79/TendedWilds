@@ -8,7 +8,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System;
 
-[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.7", "SageDragoon")]
+[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.8", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace TendedWilds
@@ -1771,8 +1771,6 @@ namespace TendedWilds
         {
             yield return new WaitForSeconds(15f);
 
-            var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
-
             // Verify Bush_Blueberry_Small exists in GlobalAssets before caching its identifier.
             // This is fast (GlobalAssets is a static asset store) and doesn't depend on
             // any blueberries actually being spawned on the map — works even on custom maps
@@ -2550,6 +2548,21 @@ namespace TendedWilds
                 if (PendingRelocations.ContainsKey(instanceId)) return;
 
                 var baseName = sceneObj.name.Replace("(Clone)", "").Trim().ToLower();
+
+                // Self-healing prefab cache: the picked-up sceneObj IS a usable
+                // instantiation source for SpawnForageableAtDestination. Writing
+                // it here closes two real failure modes:
+                //   (1) Race: player relocates before ScoutBlueberryIdentifier's
+                //       15s delay expires — foragePrefabs is empty, lookup fails,
+                //       blueberry placeholder is left behind.
+                //   (2) Late-spawned variants: a forageable variant FF spawns
+                //       after scout completes (regrowth, season tick) was never
+                //       enumerated and isn't in the cache.
+                // Either way, by the time RelocatePrefix fires we have a direct
+                // reference to a valid instance — cache it.
+                if (!WildPlantingPatches.foragePrefabs.ContainsKey(baseName))
+                    WildPlantingPatches.foragePrefabs[baseName] = sceneObj;
+
                 var f_position = constructionData.GetType().GetField("position", flags);
                 var destPos = f_position != null ? (Vector3)f_position.GetValue(constructionData) : Vector3.zero;
 
