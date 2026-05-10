@@ -8,7 +8,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System;
 
-[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.8", "SageDragoon")]
+[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.9", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace TendedWilds
@@ -1827,19 +1827,38 @@ namespace TendedWilds
             // SpawnForageableAtDestination.
             try
             {
-                int loaded = 0;
-                foreach (var fr in Resources.FindObjectsOfTypeAll<ForageableResource>())
+                // Two-pass scan. Prefab assets (scene.IsValid() == false) are
+                // stable across the entire session; scene instances can be
+                // destroyed when the player relocates/harvests them, leaving
+                // the cache holding a Unity-null reference and breaking the
+                // next relocation of the same variant. Pass 1 grabs every
+                // prefab asset; pass 2 fills any remaining variants from
+                // scene instances as a fallback.
+                int loadedPrefabs = 0, loadedInstances = 0;
+                var all = Resources.FindObjectsOfTypeAll<ForageableResource>();
+                foreach (var fr in all)
                 {
                     if (fr == null) continue;
                     var go = fr.gameObject;
-                    if (go == null) continue;
+                    if (go == null || go.scene.IsValid()) continue; // pass 1: prefabs only
                     string baseName = go.name.Replace("(Clone)", "").Trim().ToLower();
                     if (string.IsNullOrEmpty(baseName) || baseName.Contains("deco")) continue;
                     if (foragePrefabs.ContainsKey(baseName)) continue;
                     foragePrefabs[baseName] = go;
-                    loaded++;
+                    loadedPrefabs++;
                 }
-                MelonLogger.Msg($"WildPlanting: Loaded {loaded} forageable prefab(s) from ForageableResource scan.");
+                foreach (var fr in all)
+                {
+                    if (fr == null) continue;
+                    var go = fr.gameObject;
+                    if (go == null || !go.scene.IsValid()) continue; // pass 2: scene instances
+                    string baseName = go.name.Replace("(Clone)", "").Trim().ToLower();
+                    if (string.IsNullOrEmpty(baseName) || baseName.Contains("deco")) continue;
+                    if (foragePrefabs.ContainsKey(baseName)) continue;
+                    foragePrefabs[baseName] = go;
+                    loadedInstances++;
+                }
+                MelonLogger.Msg($"WildPlanting: Loaded {loadedPrefabs} prefab asset(s) + {loadedInstances} scene-instance fallback(s).");
             }
             catch (Exception ex)
             {
@@ -2549,19 +2568,29 @@ namespace TendedWilds
 
                 var baseName = sceneObj.name.Replace("(Clone)", "").Trim().ToLower();
 
-                // Self-healing prefab cache: the picked-up sceneObj IS a usable
-                // instantiation source for SpawnForageableAtDestination. Writing
-                // it here closes two real failure modes:
-                //   (1) Race: player relocates before ScoutBlueberryIdentifier's
-                //       15s delay expires — foragePrefabs is empty, lookup fails,
-                //       blueberry placeholder is left behind.
-                //   (2) Late-spawned variants: a forageable variant FF spawns
-                //       after scout completes (regrowth, season tick) was never
-                //       enumerated and isn't in the cache.
-                // Either way, by the time RelocatePrefix fires we have a direct
-                // reference to a valid instance — cache it.
-                if (!WildPlantingPatches.foragePrefabs.ContainsKey(baseName))
-                    WildPlantingPatches.foragePrefabs[baseName] = sceneObj;
+                // Self-healing prefab cache. By the time RelocatePrefix fires
+                // we have a direct reference to a valid instance, but sceneObj
+                // is the GO the player is about to delete — caching it leaves
+                // the next relocation of the same variant looking at a
+                // Unity-null reference. Prefer a prefab asset (scene-less)
+                // version, fall back to sceneObj only if no asset exists.
+                // Closes three failure modes:
+                //   (1) Race: relocate before scout's 15s delay expires.
+                //   (2) Late-spawned variants not enumerated by scout.
+                //   (3) Cached scene instance destroyed by prior relocation.
+                if (!WildPlantingPatches.foragePrefabs.TryGetValue(baseName, out var existing) || existing == null)
+                {
+                    GameObject prefabAsset = null;
+                    foreach (var fr in Resources.FindObjectsOfTypeAll<ForageableResource>())
+                    {
+                        if (fr == null) continue;
+                        var go = fr.gameObject;
+                        if (go == null || go.scene.IsValid()) continue;
+                        if (go.name.Replace("(Clone)", "").Trim().ToLower() == baseName)
+                        { prefabAsset = go; break; }
+                    }
+                    WildPlantingPatches.foragePrefabs[baseName] = prefabAsset != null ? prefabAsset : sceneObj;
+                }
 
                 var f_position = constructionData.GetType().GetField("position", flags);
                 var destPos = f_position != null ? (Vector3)f_position.GetValue(constructionData) : Vector3.zero;
@@ -2686,16 +2715,35 @@ namespace TendedWilds
             MelonLogger.Msg($"SpawnForageableAtDestination: '{baseName}' at {pending.destination}");
 
             GameObject prefab;
-            if (!WildPlantingPatches.foragePrefabs.TryGetValue(baseName, out prefab))
-            {
-                MelonLogger.Error($"No prefab found for '{baseName}'!");
-                return;
-            }
+            WildPlantingPatches.foragePrefabs.TryGetValue(baseName, out prefab);
+
+            // Cached entry might be Unity-null if it was a scene instance that
+            // got destroyed by a previous relocation/harvest. Or there might be
+            // no entry at all. Either way, re-scan for a fresh prefab asset
+            // before giving up — eliminates the "permanently broken after first
+            // failure" mode that v1.0.8 still had.
             if (prefab == null)
             {
-                MelonLogger.Error($"Prefab for '{baseName}' is null!");
-                WildPlantingPatches.foragePrefabs.Remove(baseName);
-                return;
+                foreach (var fr in Resources.FindObjectsOfTypeAll<ForageableResource>())
+                {
+                    if (fr == null) continue;
+                    var go = fr.gameObject;
+                    if (go == null) continue;
+                    if (go.name.Replace("(Clone)", "").Trim().ToLower() != baseName) continue;
+                    if (!go.scene.IsValid()) { prefab = go; break; } // prefer prefab asset
+                    if (prefab == null) prefab = go;                 // scene-instance fallback
+                }
+                if (prefab != null)
+                {
+                    WildPlantingPatches.foragePrefabs[baseName] = prefab;
+                    MelonLogger.Msg($"SpawnForageableAtDestination: Re-resolved prefab for '{baseName}' (cache was stale).");
+                }
+                else
+                {
+                    MelonLogger.Error($"No prefab found for '{baseName}' after re-scan! Blueberry placeholder will remain.");
+                    WildPlantingPatches.foragePrefabs.Remove(baseName);
+                    return;
+                }
             }
 
             GameObject spawned = GameObject.Instantiate(prefab, pending.destination, Quaternion.identity);
