@@ -8,7 +8,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System;
 
-[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.9", "SageDragoon")]
+[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.10", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace TendedWilds
@@ -392,7 +392,7 @@ namespace TendedWilds
                     MelonLogger.Msg("Relocation patches DISABLED via config.");
                 }
 
-                MelonLogger.Msg("Tended Wilds v1.0.7: Harmony patches applied.");
+                MelonLogger.Msg("Tended Wilds v1.0.10: Harmony patches applied.");
 
                 // Optional: register with Keep Clarity's settings panel if installed.
                 KeepClarityIntegration.TryRegisterAll();

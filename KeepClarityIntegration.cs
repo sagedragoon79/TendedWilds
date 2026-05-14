@@ -56,7 +56,7 @@ namespace TendedWilds
                 /*version*/ null,
                 /*iconResourcePath*/ null,
                 /*accentRgb — forest green*/ new[] { 0.20f, 0.55f, 0.30f, 1f },
-                /*order*/ 30
+                /*order*/ 20
             });
         }
 
