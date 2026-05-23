@@ -8,7 +8,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System;
 
-[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.10", "SageDragoon")]
+[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.11", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace TendedWilds
@@ -1760,6 +1760,7 @@ namespace TendedWilds
                 case ItemID.Nuts:     return new Item("ItemNuts", ItemID.Nuts);
                 case ItemID.Willow:   return new Item("ItemWillow", ItemID.Willow);
                 case ItemID.Berries:  return new Item("ItemBerries", ItemID.Berries);
+                case ItemID.GoldIngot: return new Item("ItemGoldIngot", ItemID.GoldIngot);
                 default:              return new Item("ItemBerries", ItemID.Berries);
             }
         }
