@@ -17,9 +17,9 @@ Tended Wilds is a **strict superset** of Forageable Transplantation — it inclu
 
 ## Known issues
 
-- **Pending relocations spawn as blueberry bushes after a save/quit + reload.** Relocation is a two-stage process: ordering a move places a temporary build site that the mod swaps to the correct forageable once builders finish. The swap is tracked in memory and is not yet persisted across save/load, so a relocation that is **still in progress** when you save & quit will complete as a blueberry bush on reload.
+- **In-progress relocations and wild plantings break across a save/quit + reload.** Both features work in two stages: placing the order creates a temporary build site that the mod finishes into the correct forageable once builders complete it. That swap (and the seasonal setup) is tracked in memory and is not yet persisted across save/load. So a relocation **or** wild planting that is **still being built** when you save & quit will, on reload, complete as a blueberry bush (and/or lose its proper growing-season windows).
 
-  **Workaround:** let any pending relocations finish building before you save & quit. Relocations that have already completed are unaffected — this only bites moves that are mid-flight at save time.
+  **Workaround:** let any pending relocations and wild plantings finish building before you save & quit. Anything already completed is unaffected — this only bites orders that are mid-flight at save time.
 
 ## Compatibility
 
