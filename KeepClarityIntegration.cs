@@ -62,7 +62,7 @@ namespace TendedWilds
 
         private static object NewMeta(string label = null, string tooltip = null,
             object min = null, object max = null, bool restartRequired = false,
-            int order = 0, Func<bool> visibleWhen = null)
+            bool reloadRequired = false, int order = 0, Func<bool> visibleWhen = null)
         {
             var m = Activator.CreateInstance(_settingsMetaType);
             void Set(string field, object value)
@@ -75,6 +75,7 @@ namespace TendedWilds
             Set("Min", min);
             Set("Max", max);
             Set("RestartRequired", restartRequired);
+            Set("ReloadRequired", reloadRequired);
             Set("Order", order);
             Set("VisibleWhen", visibleWhen);
             return m;
@@ -89,26 +90,36 @@ namespace TendedWilds
         private static void RegisterEntries()
         {
             // === Master ===
+            // ModEnabled gates the whole mod via an early-return in OnInitializeMelon
+            // (no patches wired if off) → restart.
             Reg("Master", TendedWildsMod.cfgModEnabled,
                 NewMeta("Mod Enabled", "Disable to fall back to vanilla Forager Shack", restartRequired: true));
+            // RelocationEnabled gates installation of the relocation Harmony patches
+            // in OnInitializeMelon (line ~341). Without those patches relocation can't
+            // function regardless of runtime value → restart.
             Reg("Master", TendedWildsMod.cfgRelocationEnabled,
-                NewMeta("Relocation Enabled", "Master toggle for forageable relocation"));
+                NewMeta("Relocation Enabled", "Master toggle for forageable relocation", restartRequired: true));
 
             // === Per-type relocation ===
+            // Each toggle is read in ApplyBuildingData (started from OnSceneWasLoaded)
+            // to decide which forageables get relocation BuildingData applied at map
+            // load → reload.
             Func<bool> relocationOn = () => TendedWildsMod.cfgRelocationEnabled.Value;
-            Reg("Relocate by Type", TendedWildsMod.cfgRelocateHerbs, NewMeta("Herbs", visibleWhen: relocationOn));
-            Reg("Relocate by Type", TendedWildsMod.cfgRelocateMushrooms, NewMeta("Mushrooms", visibleWhen: relocationOn));
-            Reg("Relocate by Type", TendedWildsMod.cfgRelocateGreens, NewMeta("Greens", visibleWhen: relocationOn));
-            Reg("Relocate by Type", TendedWildsMod.cfgRelocateRoots, NewMeta("Roots", visibleWhen: relocationOn));
-            Reg("Relocate by Type", TendedWildsMod.cfgRelocateNuts, NewMeta("Hazelnuts", visibleWhen: relocationOn));
-            Reg("Relocate by Type", TendedWildsMod.cfgRelocateWillow, NewMeta("Willow", visibleWhen: relocationOn));
+            Reg("Relocate by Type", TendedWildsMod.cfgRelocateHerbs, NewMeta("Herbs", reloadRequired: true, visibleWhen: relocationOn));
+            Reg("Relocate by Type", TendedWildsMod.cfgRelocateMushrooms, NewMeta("Mushrooms", reloadRequired: true, visibleWhen: relocationOn));
+            Reg("Relocate by Type", TendedWildsMod.cfgRelocateGreens, NewMeta("Greens", reloadRequired: true, visibleWhen: relocationOn));
+            Reg("Relocate by Type", TendedWildsMod.cfgRelocateRoots, NewMeta("Roots", reloadRequired: true, visibleWhen: relocationOn));
+            Reg("Relocate by Type", TendedWildsMod.cfgRelocateNuts, NewMeta("Hazelnuts", reloadRequired: true, visibleWhen: relocationOn));
+            Reg("Relocate by Type", TendedWildsMod.cfgRelocateWillow, NewMeta("Willow", reloadRequired: true, visibleWhen: relocationOn));
             Reg("Relocate by Type", TendedWildsMod.cfgRelocateBerries,
-                NewMeta("Berry Bushes", "Hawthorn, sumac", visibleWhen: relocationOn));
+                NewMeta("Berry Bushes", "Hawthorn, sumac", reloadRequired: true, visibleWhen: relocationOn));
 
             // === Cost ===
+            // Baked into each forageable's goldRequiredToRelocate BuildingData in
+            // ApplyBuildingData at map load → reload.
             Reg("Cost", TendedWildsMod.cfgGoldCostToRelocate,
                 NewMeta("Gold Cost per Relocation", min: 0, max: 100,
-                    tooltip: "0 = free, just labor"));
+                    tooltip: "0 = free, just labor", reloadRequired: true));
         }
     }
 }

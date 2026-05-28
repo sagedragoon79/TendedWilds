@@ -8,11 +8,34 @@ using System.Collections.Generic;
 using System.Reflection;
 using System;
 
-[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.11", "SageDragoon")]
+[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.12", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace TendedWilds
 {
+    /// <summary>
+    /// Tech-rank caps that TW applies (by directly modifying TechTreeNodeData.numRanks).
+    /// Published from mod init so sibling mods can respect TW's design intent
+    /// from frame zero — TW's own PatchTechTree retries for up to 30 minutes,
+    /// so without this an auto-research queue (e.g. Keep Clarity) can spend
+    /// the soon-to-be-trimmed rank before the patch lands.
+    ///
+    /// Read from outside via reflection (soft dep): no hard reference needed.
+    ///   var t = Type.GetType("TendedWilds.TechRankCaps, TendedWilds_FF");
+    ///   var max = (int)(t?.GetMethod("GetMaxRank")?.Invoke(null, new object[]{"Woodlore"}) ?? -1);
+    /// Returns -1 if the tech isn't capped by TW.
+    /// </summary>
+    public static class TechRankCaps
+    {
+        public static readonly Dictionary<string, int> Caps = new Dictionary<string, int>
+        {
+            { "Woodlore", 2 },
+        };
+
+        public static int GetMaxRank(string techName) =>
+            !string.IsNullOrEmpty(techName) && Caps.TryGetValue(techName, out int v) ? v : -1;
+    }
+
     public class TendedWildsMod : MelonMod
     {
         private static readonly BindingFlags AllInstance =
