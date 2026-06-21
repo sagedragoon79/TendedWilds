@@ -8,7 +8,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System;
 
-[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.12", "SageDragoon")]
+[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.13", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace TendedWilds
@@ -913,11 +913,16 @@ namespace TendedWilds
         // =====================================================================
         // Priority helpers (shared between patches and save/load)
         // =====================================================================
-        // Key by position so priorities survive building upgrades (same position, new instance)
+        // Key by position so priorities survive building upgrades (same position, new instance).
+        // Quantize to the build grid (cell size 5) and pack x,z into disjoint bands so distinct
+        // shacks never collide. The old x*1000+z hash was non-injective once z exceeded 1000
+        // (real maps run to ~2560u), silently merging two shacks' priority dicts.
         internal static int GetShackKey(ForagerShack shack)
         {
             var pos = shack.transform.position;
-            return Mathf.RoundToInt(pos.x * 1000f + pos.z);
+            int gx = Mathf.RoundToInt(pos.x / 5f);
+            int gz = Mathf.RoundToInt(pos.z / 5f);
+            return gx * 100000 + gz; // 100000 >> max grid index (~512), so no band overlap
         }
 
         internal static int GetPriority(ForagerShack shack, ItemID itemID)
@@ -1064,27 +1069,96 @@ namespace TendedWilds
                 mi_IS_GetCopyOfAllItems = typeof(ItemStorage).GetMethod("GetCopyOfAllItems", AllInstance);
         }
 
-        // Initialize default priorities for a shack (all items at 5)
-        internal static void InitializeShackDefaults(ForagerShack shack)
+        // The forageable items the priority system tracks.
+        internal static readonly ItemID[] ForageItemIDs =
         {
-            int id = shack.GetInstanceID();
-            if (shackPriorities.ContainsKey(id)) return;
+            ItemID.Berries, ItemID.Greens, ItemID.Herbs, ItemID.Mushroom,
+            ItemID.Roots, ItemID.Nuts, ItemID.Willow, ItemID.Eggs
+        };
+
+        // Read the live (FF-restored) primary foraging-bucket score for an item.
+        private static bool TryGetBucketScore(ForagerShack shack, ItemID itemID, out float score)
+        {
+            score = 0f;
+            EnsureForagerShackFieldCache();
+            if (fi_FS_scoreByForagingBucket == null) return false;
+            var dict = fi_FS_scoreByForagingBucket.GetValue(shack) as System.Collections.IDictionary;
+            if (dict == null) return false;
+
+            WorkBucketIdentifier bucket;
+            switch (itemID)
+            {
+                case ItemID.Herbs:    bucket = WorkBucketIdentifier.HerbsToForage; break;
+                case ItemID.Greens:   bucket = WorkBucketIdentifier.GreensToForage; break;
+                case ItemID.Nuts:     bucket = WorkBucketIdentifier.NutsToForage; break;
+                case ItemID.Mushroom: bucket = WorkBucketIdentifier.MushroomToForage; break;
+                case ItemID.Roots:    bucket = WorkBucketIdentifier.RootsToForage; break;
+                case ItemID.Willow:   bucket = WorkBucketIdentifier.WillowToForage; break;
+                case ItemID.Berries:  bucket = WorkBucketIdentifier.BerriesToForage; break;
+                case ItemID.Eggs:     bucket = WorkBucketIdentifier.EggsToForage; break;
+                default: return false;
+            }
+            if (!dict.Contains(bucket)) return false;
+            score = Convert.ToSingle(dict[bucket]); // boxed float — Convert avoids unbox pitfalls
+            return true;
+        }
+
+        // Reverse-map a live bucket score to the nearest 1-9 priority (PriorityToScore is injective).
+        internal static int ScoreToPriority(float score)
+        {
+            int best = DEFAULT_PRIORITY;
+            float bestDiff = float.MaxValue;
+            for (int p = 1; p <= 9; p++)
+            {
+                float diff = Mathf.Abs(score - PriorityToScore[p]);
+                if (diff < bestDiff) { bestDiff = diff; best = p; }
+            }
+            return best;
+        }
+
+        // Rebuild the priority shadow for a shack from FF's save-restored foraging scores,
+        // or seed defaults for a genuinely-fresh shack.
+        //
+        // FF persists _scoreByForagingBucket across save/load, so the player's configured
+        // 1-9 values survive in the engine. The mod's shadow dict is cleared on every map
+        // load, so we MUST rehydrate it from those restored scores instead of stamping
+        // defaults — otherwise opening a shack overwrites the restored scores with 5/250.
+        internal static void RehydrateOrInitShack(ForagerShack shack)
+        {
+            int id = GetShackKey(shack);
+            if (shackPriorities.ContainsKey(id)) return; // already established this session
 
             var dict = new Dictionary<int, int>();
-            dict[(int)ItemID.Berries] = DEFAULT_PRIORITY;
-            dict[(int)ItemID.Greens] = DEFAULT_PRIORITY;
-            dict[(int)ItemID.Herbs] = DEFAULT_PRIORITY;
-            dict[(int)ItemID.Mushroom] = DEFAULT_PRIORITY;
-            dict[(int)ItemID.Roots] = DEFAULT_PRIORITY;
-            dict[(int)ItemID.Nuts] = DEFAULT_PRIORITY;
-            dict[(int)ItemID.Willow] = DEFAULT_PRIORITY;
-            dict[(int)ItemID.Eggs] = DEFAULT_PRIORITY;
+            bool anyConfigured = false; // any non-zero restored score => the shack was configured
+            foreach (var item in ForageItemIDs)
+            {
+                int pr = DEFAULT_PRIORITY;
+                if (TryGetBucketScore(shack, item, out float sc))
+                {
+                    pr = ScoreToPriority(sc);
+                    if (sc > 1f) anyConfigured = true; // matches vanilla IsPrioritized threshold
+                }
+                dict[(int)item] = pr;
+            }
+
             shackPriorities[id] = dict;
 
-            // Apply default scores
-            foreach (var kvp in dict)
+            if (anyConfigured)
             {
-                ApplyScoreToBucket(shack, (ItemID)kvp.Key, (float)PriorityToScore[kvp.Value]);
+                // Configured shack — trust the restored scores, do NOT overwrite them.
+                MelonLogger.Msg($"Priority: rehydrated shack key={id} from saved scores.");
+            }
+            else
+            {
+                // Fresh shack (all buckets 0) — preserve the mod's new-shack UX of priority 5.
+                // NOTE: a shack the player deliberately set to ALL-OFF is indistinguishable from
+                // fresh by score alone and will re-default to 5 across a reload (rare edge).
+                foreach (var item in ForageItemIDs)
+                {
+                    dict[(int)item] = DEFAULT_PRIORITY;
+                    ApplyScoreToBucket(shack, item, (float)PriorityToScore[DEFAULT_PRIORITY]);
+                }
+                MelonLogger.Msg($"Priority: fresh shack key={id} → defaulted all items to {DEFAULT_PRIORITY}.");
             }
         }
     }
@@ -1146,7 +1220,13 @@ namespace TendedWilds
                     int score = TendedWildsMod.PriorityToScore[priority];
                     TendedWildsMod.ApplyScoreToBucket(shack, itemID, (float)score);
                 }
-                // Toggle OFF — vanilla already set score to 0, leave it
+                else
+                {
+                    // Toggle OFF — vanilla already set the bucket score to 0. Persist that as
+                    // priority 1 in the shadow so it STICKS: otherwise GetPriority keeps returning
+                    // the old value and IsPrioritized re-lights the toggle on UI reopen.
+                    TendedWildsMod.SetPriorityDirect(shack, itemID, 1);
+                }
             }
             catch (Exception ex)
             {
@@ -1380,7 +1460,7 @@ namespace TendedWilds
                 }
                 catch { }
 
-                TendedWildsMod.InitializeShackDefaults(shack);
+                TendedWildsMod.RehydrateOrInitShack(shack);
 
                 var iconDictField = typeof(UIForagingProductivitySubWidget).GetField("foragingIconDict", AllInstance);
                 if (iconDictField == null) return;
