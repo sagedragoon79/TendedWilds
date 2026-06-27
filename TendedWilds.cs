@@ -8,7 +8,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System;
 
-[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.13", "SageDragoon")]
+[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.14", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace TendedWilds
@@ -84,6 +84,7 @@ namespace TendedWilds
         internal static MelonPreferences_Entry<bool> cfgRelocateWillow;
         internal static MelonPreferences_Entry<bool> cfgRelocateBerries;
         internal static MelonPreferences_Entry<int>  cfgGoldCostToRelocate;
+        internal static MelonPreferences_Entry<bool> cfgExemptForagingBuildings;
 
         public override void OnInitializeMelon()
         {
@@ -111,6 +112,10 @@ namespace TendedWilds
             cfgGoldCostToRelocate = cat.CreateEntry("GoldCostToRelocate", 0,
                 display_name: "Gold Cost to Relocate",
                 description: "Gold required per relocation (0 = free, just labor).");
+            cfgExemptForagingBuildings = cat.CreateEntry("ExemptForagingBuildings", true,
+                display_name: "Exempt Wells/Hunter Shacks from Foraging Penalty",
+                description: "Wells and Hunter Shacks no longer reduce the output of nearby forageables " +
+                             "(Forager Shacks are already exempt in vanilla). Requires game restart.");
 
             if (!cfgModEnabled.Value)
             {
@@ -334,6 +339,44 @@ namespace TendedWilds
                                 typeof(WildPlantingPatches).GetMethod(nameof(WildPlantingPatches.OnBuiltPrefabInstantiatedPostfix), AllStatic)));
                             MelonLogger.Msg("Patched BuildSite.OnBuiltPrefabInstantiated (wild planting spawn, fallback)");
                         }
+                    }
+                }
+
+                // --- Foraging-penalty exemption for Wells + Hunter Shacks ---
+                // Vanilla ForagingManager.OnBuildingBuilt/OnBuildingDestroyed already
+                // skips Forager Shacks; we extend that to Wells and Hunter Shacks so
+                // they don't reduce nearby forageable output. Gated at init (restart-
+                // required) so build/destroy stay symmetric within a session.
+                if (cfgExemptForagingBuildings.Value)
+                {
+                    Type foragingManagerType = null;
+                    foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                    {
+                        foragingManagerType = asm.GetType("ForagingManager");
+                        if (foragingManagerType != null) break;
+                    }
+                    if (foragingManagerType != null)
+                    {
+                        var onBuilt = foragingManagerType.GetMethod("OnBuildingBuilt",
+                            AllInstance | BindingFlags.DeclaredOnly);
+                        if (onBuilt != null)
+                        {
+                            harmony.Patch(onBuilt, prefix: new HarmonyMethod(
+                                typeof(ForagingExemptionPatches).GetMethod(nameof(ForagingExemptionPatches.OnBuildingBuiltPrefix), AllStatic)));
+                            MelonLogger.Msg("Patched ForagingManager.OnBuildingBuilt (exempt Well/Hunter Shack)");
+                        }
+                        var onDestroyed = foragingManagerType.GetMethod("OnBuildingDestroyed",
+                            AllInstance | BindingFlags.DeclaredOnly);
+                        if (onDestroyed != null)
+                        {
+                            harmony.Patch(onDestroyed, prefix: new HarmonyMethod(
+                                typeof(ForagingExemptionPatches).GetMethod(nameof(ForagingExemptionPatches.OnBuildingDestroyedPrefix), AllStatic)));
+                            MelonLogger.Msg("Patched ForagingManager.OnBuildingDestroyed (exempt Well/Hunter Shack)");
+                        }
+                    }
+                    else
+                    {
+                        MelonLogger.Warning("Foraging exemption: ForagingManager type not found — skipped.");
                     }
                 }
 
@@ -1694,6 +1737,46 @@ namespace TendedWilds
     // =========================================================================
     // Display name patch (Feature 4)
     // =========================================================================
+    // =========================================================================
+    // Foraging-penalty exemption: Wells + Hunter Shacks don't reduce nearby
+    // forageable output. (Forager Shacks are already exempt by vanilla.)
+    // =========================================================================
+    public static class ForagingExemptionPatches
+    {
+        private static readonly BindingFlags AllInstance =
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+
+        // True if the event's building is a Well or Hunter Shack (HunterBuilding).
+        private static bool IsExemptBuilding(object receivedEvent)
+        {
+            if (receivedEvent == null) return false;
+            // Building events are infrequent (only on place/destroy), so resolving
+            // the property per call is fine; both event types expose "building".
+            var prop = receivedEvent.GetType().GetProperty("building", AllInstance);
+            var building = prop?.GetValue(receivedEvent) as Component;
+            if (building == null) return false;
+            // Match by component type name to avoid hard type references.
+            if (building.GetComponent("Well") != null) return true;
+            if (building.GetComponent("HunterBuilding") != null) return true;
+            return false;
+        }
+
+        // Return false to SKIP the vanilla handler (which only applies the nearby-
+        // building foraging penalty). Non-exempt buildings fall through to vanilla
+        // unchanged. Symmetric with the destroy prefix so the counter never drifts.
+        public static bool OnBuildingBuiltPrefix(object receivedEvent)
+        {
+            try { return !IsExemptBuilding(receivedEvent); }
+            catch (Exception ex) { MelonLogger.Error($"OnBuildingBuiltPrefix error: {ex.Message}"); return true; }
+        }
+
+        public static bool OnBuildingDestroyedPrefix(object receivedEvent)
+        {
+            try { return !IsExemptBuilding(receivedEvent); }
+            catch (Exception ex) { MelonLogger.Error($"OnBuildingDestroyedPrefix error: {ex.Message}"); return true; }
+        }
+    }
+
     public static class DisplayNamePatches
     {
         public static void SetBuildingDataRecordNamePostfix(object __instance)

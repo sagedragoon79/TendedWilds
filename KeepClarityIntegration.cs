@@ -120,6 +120,13 @@ namespace TendedWilds
             Reg("Cost", TendedWildsMod.cfgGoldCostToRelocate,
                 NewMeta("Gold Cost per Relocation", min: 0, max: 100,
                     tooltip: "0 = free, just labor", reloadRequired: true));
+
+            // === Foraging ===
+            // Gates installation of the ForagingManager exemption patches at init → restart.
+            Reg("Foraging", TendedWildsMod.cfgExemptForagingBuildings,
+                NewMeta("Exempt Wells/Hunter Shacks from Foraging Penalty",
+                    "Wells and Hunter Shacks won't reduce nearby forageable output (Forager Shacks already exempt in vanilla)",
+                    restartRequired: true));
         }
     }
 }
