@@ -8,7 +8,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System;
 
-[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.15", "SageDragoon")]
+[assembly: MelonInfo(typeof(TendedWilds.TendedWildsMod), "Tended Wilds", "1.0.16", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace TendedWilds
@@ -1020,6 +1020,15 @@ namespace TendedWilds
                 if (dict.TryGetValue((int)itemID, out int val))
                     return val;
             }
+            // No shadow entry yet (e.g. first UI touch after a reload, before
+            // rehydration). NEVER answer with the default here: FF's shack UI
+            // Init does `toggle.isOn = IsPrioritized(item)` for every item and
+            // the toggle listeners fire SetPrioritized on each flip — a default
+            // "5" answer told every toggle it was ON and the resulting
+            // SetPrioritizedPostfix stamped 250 over every real saved score.
+            // Derive the truth from the live (save-restored) bucket score.
+            if (TryGetBucketScore(shack, itemID, out float sc))
+                return ScoreToPriority(sc);
             return DEFAULT_PRIORITY;
         }
 
@@ -1214,6 +1223,10 @@ namespace TendedWilds
         {
             int id = GetShackKey(shack);
             if (shackPriorities.ContainsKey(id)) return; // already established this session
+            // Never seed (and never stamp defaults) before the save has fully
+            // deserialized — a pre-restore read sees vanilla zeros and would
+            // misclassify a configured shack as "fresh".
+            if (!GameManager.gameReadyToPlay) return;
 
             var dict = new Dictionary<int, int>();
             bool anyConfigured = false; // any non-zero restored score => the shack was configured
@@ -1276,6 +1289,10 @@ namespace TendedWilds
             {
                 var shack = __instance as ForagerShack;
                 if (shack == null) return;
+                // Before the save is fully restored, leave vanilla's answer alone.
+                if (!GameManager.gameReadyToPlay) return;
+                // Make the shadow authoritative before answering (idempotent).
+                TendedWildsMod.RehydrateOrInitShack(shack);
                 int priority = TendedWildsMod.GetPriority(shack, itemID);
                 __result = priority > 1;
             }
@@ -1293,6 +1310,11 @@ namespace TendedWilds
             {
                 var shack = __instance as ForagerShack;
                 if (shack == null) return;
+                // Before the save is fully restored, do nothing — we must never
+                // write scores based on an un-rehydrated shadow.
+                if (!GameManager.gameReadyToPlay) return;
+                // Make the shadow authoritative before deciding (idempotent).
+                TendedWildsMod.RehydrateOrInitShack(shack);
 
                 if (val)
                 {
